@@ -14,11 +14,12 @@ def make_vec_envs(env_name,
                   start_level,
                   num_levels,
                   distribution_mode,
+                  paint_vel_info,
                   seed,
                   num_processes, 
-                  gamma, 
                   log_dir,
                   device, 
+                  recurrent,
                   num_frame_stack):
     """
     Make vector of environments.
@@ -33,18 +34,19 @@ def make_vec_envs(env_name,
         The number of unique levels that can be generated. Set to 0 to use unlimited levels.
     distribution_mode : `str`
         What variant of the levels to use {easy, hard, extreme, memory, exploration}.
+    paint_vel_info : `Boolean`
+        Paint player velocity info in the top left corner. Only supported by certain games.          
     seed : `int`
         Random seed.
     num_processes : `int`
         How many training CPU processes to use (default: 16).
         This will give the number of environments to make.
-    gamma : `float` or `NoneType`
-        Discount factor for rewards.
-        `None` when used for evaluation.
     log_dir : `str` or `NoneType`
         Directory to save agents logs.       
     device : `torch.device`
         CPU or GPU.
+    recurrent: `Boolean`
+        Whether the policy is recurrent or  not.
     num_frame_stack : `int`
         Number of frames to stack for VecFrameStack wrapper (default: 0).        
 
@@ -61,7 +63,8 @@ def make_vec_envs(env_name,
                           start_level=start_level, 
                           num_levels=num_levels, 
                           distribution_mode=distribution_mode,
-                          rand_seed=seed)     
+                          paint_vel_info=paint_vel_info,
+                          rand_seed=seed)                       
 
         # extract image from dict
         envs = VecExtractDictObs(envs, "rgb")  
@@ -83,12 +86,7 @@ def make_vec_envs(env_name,
 
     # normalise the rewards during training but not during testing
     # we don't normalise the obs as the network does this /255.
-    if gamma is not None:
-        # training: normalise rewards but not the obs.
-        envs = VecNormalize(envs, ob=False, gamma=gamma)            
-    else:
-        # eval: normalise neither reward nor obs.
-        envs = VecNormalize(envs, ob=False, ret=False)  
+    envs = VecNormalize(envs, ob=False)            
 
     # wrapper to convert observation arrays to torch.tensors
     envs = VecPyTorch(envs, device)
@@ -164,7 +162,10 @@ class VecPyTorch(VecEnvWrapper):
         """
         Convert torch.tensor actions into numpy.array for envs.
         """
-        actions = actions.squeeze(1).cpu().numpy()
+        if isinstance(actions, torch.LongTensor) or len(actions.shape) > 1:
+            # Squeeze the dimension for discrete actions
+            actions = actions.squeeze(1)        
+        actions = actions.cpu().numpy()
         self.venv.step_async(actions)
 
     def step_wait(self):

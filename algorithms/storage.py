@@ -80,37 +80,17 @@ class RolloutStorage(object):
 
     def compute_returns(self,
                         next_value,
-                        use_gae,
                         gamma,
-                        gae_lambda,
-                        use_proper_time_limits=False):
+                        gae_lambda):
         """
         Compute the returns for accumulated rollouts.
         """
         self.value_preds[-1] = next_value
-        if use_proper_time_limits:
-            if use_gae:
-                gae = 0
-                for step in reversed(range(self.num_steps)):
-                    delta = self.rewards[step] + gamma * self.value_preds[step + 1] * self.masks[step + 1] - self.value_preds[step]
-                    gae = delta + gamma * gae_lambda * self.masks[step + 1] * gae
-                    gae = gae * self.bad_masks[step + 1]
-                    self.returns[step] = gae + self.value_preds[step]
-            else:
-                for step in reversed(range(self.num_steps)):
-                    self.returns[step] = (self.returns[step + 1] * gamma * self.masks[step + 1] + self.rewards[step]) * self.bad_masks[step + 1] \
-                        + (1 - self.bad_masks[step + 1]) * self.value_preds[step]
-        else:
-            if use_gae:
-                # used in openai procgen train_procgen
-                gae = 0
-                for step in reversed(range(self.num_steps)):
-                    delta = self.rewards[step] + gamma * self.value_preds[step + 1] * self.masks[step + 1] - self.value_preds[step]
-                    gae = delta + gamma * gae_lambda * self.masks[step + 1] * gae
-                    self.returns[step] = gae + self.value_preds[step]
-            else:
-                for step in reversed(range(self.num_steps)):
-                    self.returns[step] = self.returns[step + 1] * gamma * self.masks[step + 1] + self.rewards[step]
+        gae = 0
+        for step in reversed(range(self.num_steps)):
+            delta = self.rewards[step] + gamma * self.value_preds[step + 1] * self.masks[step + 1] - self.value_preds[step]
+            gae = delta + gamma * gae_lambda * self.masks[step + 1] * gae
+            self.returns[step] = gae + self.value_preds[step]
 
     def feed_forward_generator(self,
                                advantages,

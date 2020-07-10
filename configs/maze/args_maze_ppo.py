@@ -10,9 +10,13 @@ def get_args(rest_args):
     
     # --- GENERAL ---   
     
-    # training parameters
+    # train parameters
     parser.add_argument('--num_frames', type=int, default=25e6, 
                         help='number of frames to train.') 
+
+    # test parameters
+    parser.add_argument('--test', type=boolean_argument, default=False, 
+                        help='whether to test the environment on the train levels and held-out levels of same size sequentially.')     
     
     # environment
     parser.add_argument('--env_name', type=str, default='maze',
@@ -22,20 +26,22 @@ def get_args(rest_args):
                               All games support `easy` and `hard`, while other options are game-specific.\
                               The default is `hard`. Switching to `easy` will reduce the number of timesteps\
                               required to solve each game and is useful for testing or when working with limited compute resources.')  
+    parser.add_argument('--paint_vel_info', type=boolean_argument, default=False,
+                        help='paint player velocity info in the top left corner. Only supported by certain games.')                                  
     parser.add_argument('--train_num_levels', type=int, default=200,
                         help='the number of unique levels that can be generated. Set to 0 to use unlimited levels.')                          
     parser.add_argument('--train_start_level', type=int, default=0,
                         help='the point in the list of levels available to the environment at which to index into.\
                               eg. --num_levels 50 --start_level 50 makes levels 50-99 available to this environment.')    
-    parser.add_argument('--eval_num_levels', type=int, default=0,
-                        help='the number of unique levels that can be generated. Set to 0 to use unlimited levels.')                          
-    parser.add_argument('--eval_start_level', type=int, default=200,
+    parser.add_argument('--test_num_levels', type=int, default=1000,
+                        help='the number of unique levels that can be generated. Set to 0 to use unlimited levels.')  
+    parser.add_argument('--test_start_level', type=int, default=500000,
                         help='the point in the list of levels available to the environment at which to index into.\
-                              eg. --num_levels 50 --start_level 50 makes levels 50-99 available to this environment.')                                                                                                                                                           
+                              eg. --num_levels 50 --start_level 50 makes levels 50-99 available to this environment.')                                                                                                                                                                                                                                                                     
     
     # general settings
-    parser.add_argument('--seed', type=int, default=0,
-                        help='random seed (default: 0).')
+    parser.add_argument('--seed', type=int, default=10,
+                        help='random seed (default: 10).')
     parser.add_argument('--num_processes', type=int, default=64,
                         help='how many training CPU processes to use (default: 64.')                           
     parser.add_argument('--deterministic_execution', type=boolean_argument, default=False,
@@ -51,13 +57,13 @@ def get_args(rest_args):
 
     # network
     parser.add_argument('--recurrent_policy', type=boolean_argument, default=False,
-                        help='use a recurrent policy (default: False).')                             
+                        help='use a recurrent policy (default: False).')      
+    parser.add_argument('--hidden_size', type=int, default=256,
+                        help='number of nodes in hidden layer for rnn (default: 256).')                                                     
     
     # other hyperparameters  
     parser.add_argument('--policy_gamma', type=float, default=0.999, 
                         help='discount factor for rewards (default: 0.999).')  
-    parser.add_argument('--policy_use_gae', type=boolean_argument, default=True,
-                        help='use generalised advantage estimation (default: True).')
     parser.add_argument('--policy_gae_lambda', type=float, default=0.95, 
                         help='factor for trade-off of bias vs variance for generalised advantage estimator (default: 0.95).')                              
     parser.add_argument('--policy_lr', type=float, default=5e-4, 
@@ -78,12 +84,7 @@ def get_args(rest_args):
     parser.add_argument('--policy_max_grad_norm', type=float, default=0.5, 
                         help='the maximum value for the gradient clipping (default: 0.5).')   
     parser.add_argument('--policy_eps', type=float, default=1e-5, 
-                        help='Adam and RMSprop optimiser epsilon (default: 1e-5).')
-                        
-    parser.add_argument('--use_linear_lr_decay', type=boolean_argument, default=False,
-                        help='use a linear schedule on the learning rate (default: False).')                          
-    parser.add_argument('--use_proper_time_limits', type=boolean_argument, default=False,
-                        help='compute returns taking into account time limits (default: False).')                                                 
+                        help='Adam and RMSprop optimiser epsilon (default: 1e-5).')                                          
     
     # --- OTHER ---
     
@@ -101,9 +102,9 @@ def get_args(rest_args):
     parser.add_argument("--proj_name", type=str, default='ucl_msc_proj', 
                         help="the name of the project to which this run will belong.")     
     parser.add_argument("--run_name", type=str, default=None, 
-                        help="a display name for this run (default: env_name_time).")   
+                        help="a display name for this run (default: env_name_time).")     
     parser.add_argument("--group_name", type=str, default=None, 
-                        help="a string by which to group other runs.")                                                                                     
+                        help="a string by which to group other runs.")                                                                                  
   
     args = parser.parse_args(rest_args)
     args.cuda = torch.cuda.is_available()                          

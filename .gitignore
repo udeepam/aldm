@@ -1,17 +1,23 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Files
+.DS_store
 
 # Directories
 .idea/
 .vscode/
 wandb/
 cluster/
+plot_data/
+ride/
 
 # Packages
 baselines/
 higher/
+
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
 # C extensions
 *.so
