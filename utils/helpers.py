@@ -7,8 +7,6 @@ import numpy as np
 
 def set_global_seed(seed, deterministic_execution=False):
     """
-    Taken from: https://github.com/lmzintgraf/varibad
-
     Fix the random seeds of:
     1. random
     2. torch
@@ -24,17 +22,12 @@ def set_global_seed(seed, deterministic_execution=False):
     """     
     print('Seeding random, torch, numpy.')
     random.seed(seed)
-    torch.manual_seed(seed)
-    torch.random.manual_seed(seed)
     np.random.seed(seed)
-    
+    torch.manual_seed(seed)
+
     if deterministic_execution:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-    else:
-        print('Note that due to parallel processing results will be similar but not identical. '
-              'Use only one process and set --deterministic_execution to True if you want identical results. '
-              '(Not recommended; will slow code down and might not be possible with A2C). ')   
 
 
 def sf01(arr):

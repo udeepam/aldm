@@ -7,27 +7,56 @@ import torch
 import numpy as np
 
 from procgen import ProcgenEnv
-from baselines.common.vec_env import VecEnvWrapper, VecExtractDictObs, VecMonitor, VecNormalize
+
+from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
+from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
+from baselines.common.vec_env import VecEnvWrapper, VecMonitor, VecNormalize, VecExtractDictObs
 
 
-def make_vec_envs(env_name, 
+def make_env(env_name,
+             start_level,
+             num_levels,
+             distribution_mode,
+             paint_vel_info):
+    """
+    Make a single environment.
+    """
+    def _thunk():
+
+        if env_name.startswith('procgen'):
+            # generate OpenAI Procgen environment.
+            env = gym.make(env_name,
+                           start_level=start_level,
+                           num_levels=num_levels,
+                           distribution_mode=distribution_mode,
+                           paint_vel_info=paint_vel_info)
+        else:
+            raise NotImplementedError
+
+        return env
+
+    return _thunk
+
+
+def make_vec_envs(env_name,
                   start_level,
                   num_levels,
                   distribution_mode,
                   paint_vel_info,
-                  seed,
-                  num_processes, 
+                  num_processes,
                   log_dir,
-                  device, 
-                  recurrent,
-                  num_frame_stack):
+                  device,
+                  num_frame_stack,
+                  use_distribution_matching=False,
+                  percentage_levels_train=None,
+                  num_val_envs=None):
     """
     Make vector of environments.
 
     Parameters:
     -----------
     env_name : `str`
-        Name of environment to train on.  
+        Name of environment to train on.
     start_level : `int`
         The point in the list of levels available to the environment at which to index into.
     num_levels : `int`
@@ -35,65 +64,87 @@ def make_vec_envs(env_name,
     distribution_mode : `str`
         What variant of the levels to use {easy, hard, extreme, memory, exploration}.
     paint_vel_info : `Boolean`
-        Paint player velocity info in the top left corner. Only supported by certain games.          
-    seed : `int`
-        Random seed.
+        Paint player velocity info in the top left corner. Only supported by certain games.
     num_processes : `int`
-        How many training CPU processes to use (default: 16).
+        How many training CPU processes to use (default: 64).
         This will give the number of environments to make.
     log_dir : `str` or `NoneType`
-        Directory to save agents logs.       
+        Directory to save agents logs.
     device : `torch.device`
         CPU or GPU.
-    recurrent: `Boolean`
-        Whether the policy is recurrent or  not.
     num_frame_stack : `int`
-        Number of frames to stack for VecFrameStack wrapper (default: 0).        
+        Number of frames to stack for VecFrameStack wrapper (default: 0).
+    use_distribution_matching : `Boolean`
+        Whether current model is using distribution matching.
+    percentage_levels_train : `float` or `NoneType`
+        Proportion of the train levels to use for train and the rest is used for validation.
+    num_val_envs : `int` or `NoneType`
+        Number of environments from num_processes to use for validation and the rest are used for train.
 
     Returns:
     --------
-    env : 
+    env :
         Vector of environments.
-    """  
-    if env_name in ['coinrun', 'maze']:
-        # generate OpenAI Procgen environments.
-        # note that we need to seed the envs, set_global_env does not do this
+    """
+    # generate list of environments
+    if use_distribution_matching:
+        train_start_level = start_level
+        train_num_levels = int(num_levels * percentage_levels_train)
+        val_start_level = start_level + train_num_levels
+        val_num_levels = num_levels - train_num_levels
+
+        # make the (num_processes-num_val_envs) train_envs and  num_val_envs val_envs
+        envs = [make_env(env_name=env_name,
+                         start_level=train_start_level if i<=num_processes-num_val_envs-1 else val_start_level,
+                         num_levels=train_num_levels if i<=num_processes-num_val_envs-1 else val_num_levels,
+                         distribution_mode=distribution_mode,
+                         paint_vel_info=paint_vel_info) for i in range(num_processes)]
+
+        # vectorise environments
+        if len(envs) > 1:
+            # create a multiprocess vectorised wrapper for multiple environments,
+            # distributing each environment to its own process
+            envs = SubprocVecEnv(envs)
+        else:
+            # create a simple vectorised wrapper for multiple environments,
+            # calling each environment in sequence on the current Python process.
+            envs = DummyVecEnv(envs)
+
+    else:
+        if env_name == "procgen:procgen-coinrun-v0":
+            env_name = "coinrun"
         envs = ProcgenEnv(num_envs=num_processes,
-                          env_name=env_name, 
-                          start_level=start_level, 
-                          num_levels=num_levels, 
+                          env_name=env_name,
+                          start_level=start_level,
+                          num_levels=num_levels,
                           distribution_mode=distribution_mode,
-                          paint_vel_info=paint_vel_info,
-                          rand_seed=seed)                       
+                          paint_vel_info=paint_vel_info)
 
         # extract image from dict
-        envs = VecExtractDictObs(envs, "rgb")  
+        envs = VecExtractDictObs(envs, "rgb")
 
-        # re-order channels, (H,W,C) => (C,H,W). 
-        # required for PyTorch convolution layers.
-        envs = VecTransposeImage(envs)
-    else:
-        raise NotImplementedError
+    # re-order channels, (H,W,C) => (C,H,W).
+    # required for PyTorch convolution layers.
+    envs = VecTransposeImage(envs)
 
-    if log_dir:
-        # records:
-        #  1. episode reward, 
-        #  2. episode length
-        #  3. episode time taken
-        envs = VecMonitor(venv=envs, 
-                          filename=log_dir,
-                          keep_buf=100)
+    # records:
+    #  1. episode reward,
+    #  2. episode length
+    #  3. episode time taken
+    envs = VecMonitor(venv=envs,
+                      filename=log_dir,
+                      keep_buf=100)
 
-    # normalise the rewards during training but not during testing
+    # normalise the rewards
     # we don't normalise the obs as the network does this /255.
-    envs = VecNormalize(envs, ob=False)            
+    envs = VecNormalize(envs, ob=False)
 
-    # wrapper to convert observation arrays to torch.tensors
+    # wrapper to convert observation arrays to torch.Tensors
     envs = VecPyTorch(envs, device)
 
-    # Frame stacking wrapper for vectorized environment    
+    # Frame stacking wrapper for vectorized environment
     if num_frame_stack !=0:
-        envs = VecPyTorchFrameStack(envs, num_frame_stack, device)    
+        envs = VecPyTorchFrameStack(envs, num_frame_stack, device)
 
     return envs
 
@@ -107,7 +158,7 @@ class VecTransposeImage(VecEnvWrapper):
 
     def __init__(self, venv):
         height, width, channels = venv.observation_space.shape
-        observation_space = Box(low=0, 
+        observation_space = Box(low=0,
                                 high=255,
                                 shape=(channels, height, width),
                                 dtype=venv.observation_space.dtype)
@@ -135,7 +186,7 @@ class VecTransposeImage(VecEnvWrapper):
         return self.transpose_image(self.venv.reset())
 
     def close(self):
-        self.venv.close()        
+        self.venv.close()
 
 
 class VecPyTorch(VecEnvWrapper):
@@ -144,7 +195,7 @@ class VecPyTorch(VecEnvWrapper):
         Taken from: https://github.com/harry-uglow/Curriculum-Reinforcement-Learning
 
         Converts array of observations to Tensors. This makes them
-        usable as input to a PyTorch policy network.     
+        usable as input to a PyTorch policy network.
         """
         super(VecPyTorch, self).__init__(venv)
         self.device = device
@@ -164,7 +215,7 @@ class VecPyTorch(VecEnvWrapper):
         """
         if isinstance(actions, torch.LongTensor) or len(actions.shape) > 1:
             # Squeeze the dimension for discrete actions
-            actions = actions.squeeze(1)        
+            actions = actions.squeeze(1)
         actions = actions.cpu().numpy()
         self.venv.step_async(actions)
 
@@ -172,13 +223,13 @@ class VecPyTorch(VecEnvWrapper):
         """
         Convert numpy.array observations into torch.tensor for policy network.
         Convert numpy.array rewards into torch.tensor for policy network.
-        """      
+        """
         obs, reward, done, info = self.venv.step_wait()
         # convert obs to torch tensor
         obs = torch.from_numpy(obs).float().to(self.device)
         # convert reward to torch tensor
         reward = torch.from_numpy(reward).unsqueeze(dim=1).float()
-        return obs, reward, done, info    
+        return obs, reward, done, info
 
 
 class VecPyTorchFrameStack(VecEnvWrapper):
@@ -223,93 +274,85 @@ class VecPyTorchFrameStack(VecEnvWrapper):
         return self.stacked_obs
 
     def close(self):
-        self.venv.close()     
+        self.venv.close()
 
 
-# from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
-# from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
-# from baselines.common.vec_env.shmem_vec_env import ShmemVecEnv
-# from baselines.common.vec_env import VecNormalize, VecMonitor
-
-# def make_env(env_id,
-#              rank,
-#              log_dir,             
-#              mode,
-#              args):
+# from procgen import ProcgenEnv
+# from baselines.common.vec_env import VecEnvWrapper, VecExtractDictObs, VecMonitor, VecNormalize
+# def make_vec_envs(env_name,
+#                   start_level,
+#                   num_levels,
+#                   distribution_mode,
+#                   paint_vel_info,
+#                   num_processes,
+#                   log_dir,
+#                   device,
+#                   num_frame_stack):
 #     """
-#     Make a single environment.
+#     Make vector of environments.
 
 #     Parameters:
 #     -----------
-#     env_id : `str`
-#         Name of environment to train on.      
-#     rank : `int`
-#         ID of environment. 
-#     log_dir : `str`
-#         Directory to save agents logs.                     
-#     mode : `int`
-#         {train:1, eval:0}       
-#     args : `argparse.Namespace`
-#         The model and environment specific arguments for the experiment.        
+#     env_name : `str`
+#         Name of environment to train on.
+#     start_level : `int`
+#         The point in the list of levels available to the environment at which to index into.
+#     num_levels : `int`
+#         The number of unique levels that can be generated. Set to 0 to use unlimited levels.
+#     distribution_mode : `str`
+#         What variant of the levels to use {easy, hard, extreme, memory, exploration}.
+#     paint_vel_info : `Boolean`
+#         Paint player velocity info in the top left corner. Only supported by certain games.
+#     num_processes : `int`
+#         How many training CPU processes to use (default: 16).
+#         This will give the number of environments to make.
+#     log_dir : `str` or `NoneType`
+#         Directory to save agents logs.
+#     device : `torch.device`
+#         CPU or GPU.
+#     num_frame_stack : `int`
+#         Number of frames to stack for VecFrameStack wrapper (default: 0).
 
 #     Returns:
 #     --------
-#     env : 
-#         The envrionement.
-#     """  
-
-#     def _thunk():
-
-#         if env_id.startswith('procgen'):
-#             # generate OpenAI Procgen environment.
-#             # note that we need to seed the env, set_global_env does not do this
-#             env = gym.make(env_id, 
-#                            start_level=args.start_level, 
-#                            num_levels=mode*args.num_levels, 
-#                            distribution_mode=args.distribution_mode,
-#                            rand_seed=args.seed+rank) 
-#         else:       
-#             raise NotImplementedError       
-
-#         obs_shape = env.observation_space.shape
-#         if len(obs_shape) == 3 and obs_shape[2] in [1, 3]:
-#             # re-order channels, from (H,W,C) to (C,H,W). 
-#             # it is required for PyTorch convolution layers.
-#             env = TransposeImage(env)              
-
-#         return env
-
-#     return _thunk
-
-    # # generate list of environments
-    # envs = [make_env(env_id=env_name, 
-    #                  rank=i,
-    #                  log_dir=log_dir,
-    #                  mode=mode,
-    #                  args=args) 
-    #         for i in range(num_processes)]
-    # # vectorise environments
-    # if len(envs) > 1:
-    #     # create a multiprocess vectorised wrapper for multiple environments, 
-    #     # distributing each environment to its own process
-    #     envs = SubprocVecEnv(envs)
-    # else:
-    #     # create a simple vectorised wrapper for multiple environments,
-    #     # calling each environment in sequence on the current Python process.
-    #     envs = DummyVecEnv(envs)        
-
-# class TransposeImage(gym.ObservationWrapper):
+#     env :
+#         Vector of environments.
 #     """
-#     Taken from: https://github.com/dannysdeng/dqn-pytorch
-#     """
-#     def __init__(self, env=None):
-#         super(TransposeImage, self).__init__(env)
-#         obs_shape = self.observation_space.shape
-#         self.observation_space = Box(self.observation_space.low[0, 0, 0],
-#                                      self.observation_space.high[0, 0, 0],
-#                                      [obs_shape[2], obs_shape[1], obs_shape[0]],
-#                                      dtype=self.observation_space.dtype)
+#     if env_name in ['coinrun', 'maze']:
+#         # generate OpenAI Procgen environments.
+#         envs = ProcgenEnv(num_envs=num_processes,
+#                           env_name=env_name,
+#                           start_level=start_level,
+#                           num_levels=num_levels,
+#                           distribution_mode=distribution_mode,
+#                           paint_vel_info=paint_vel_info)
 
-#     def observation(self, observation):
-#         # observation is of type Tensor
-#         return observation.transpose(2, 0, 1)           
+#         # extract image from dict
+#         envs = VecExtractDictObs(envs, "rgb")
+
+#         # re-order channels, (H,W,C) => (C,H,W).
+#         # required for PyTorch convolution layers.
+#         envs = VecTransposeImage(envs)
+#     else:
+#         raise NotImplementedError
+
+#     # records:
+#     #  1. episode reward,
+#     #  2. episode length
+#     #  3. episode time taken
+#     envs = VecMonitor(venv=envs,
+#                       filename=log_dir,
+#                       keep_buf=100)
+
+#     # normalise the rewards
+#     # we don't normalise the obs as the network does this /255.
+#     envs = VecNormalize(envs, ob=False)
+
+#     # wrapper to convert observation arrays to torch.tensors
+#     envs = VecPyTorch(envs, device)
+
+#     # Frame stacking wrapper for vectorized environment
+#     if num_frame_stack !=0:
+#         envs = VecPyTorchFrameStack(envs, num_frame_stack, device)
+
+#     return envs
