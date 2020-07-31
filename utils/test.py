@@ -9,8 +9,8 @@ def test(args, obs_shape, actor_critic, device):
     # put actor-critic into evaluation mode
     actor_critic.eval()
 
-    # store mean episodic returns from train and test envs
-    mean_episodic_return = list()
+    # store episodic returns from train and test envs
+    episodic_returns = list()
 
     start_levels = [args.train_start_level, args.test_start_level]
     num_levels   = [args.train_num_levels, args.test_num_levels]
@@ -20,7 +20,7 @@ def test(args, obs_shape, actor_critic, device):
         start_level = start_levels[i]
         nlevels = num_levels[i]
 
-        # initialise buffer for calculating means
+        # initialise buffer for storing returns from episodes
         episode_returns = list()
 
         # iterate through levels sequentially
@@ -56,7 +56,7 @@ def test(args, obs_shape, actor_critic, device):
                     env.close()
                     break
 
-        # compute mean episodic return
-        mean_episodic_return.append(utl_math.safe_mean(episode_returns))
+        # store episodic returns from train and test
+        episodic_returns.append(episode_returns)
 
-    return mean_episodic_return
+    return episodic_returns

@@ -64,6 +64,8 @@ def get_args(rest_args):
     # --- DISTRIBUTION MATCHING ---
     parser.add_argument("--use_distribution_matching", type=boolean_argument, default=False,
                         help='Whether to use distribution matching.')
+    parser.add_argument("--dist_matching_loss", type=str, default="kld",
+                        help='Which divergence to use for calculating the loss for distribution matching {kld, jsd}.')
 
     # splitting train levels
     parser.add_argument("--percentage_levels_train", type=float, default=1.0,
@@ -74,7 +76,7 @@ def get_args(rest_args):
     # hyperparameters
     parser.add_argument("--dist_matching_coeff", type=float, default=0,
                         help='Coefficient in front distribution matching loss term.')
-    parser.add_argument("--num_components", type=int, default=0,
+    parser.add_argument("--dist_matching_num_components", type=int, default=0,
                         help='Number of mixture Gaussian mixture components.')
 
     # --- POLICY ---
@@ -128,8 +130,13 @@ def get_args(rest_args):
     parser.add_argument("--group_name", type=str, default=None,
                         help="a string by which to group other runs.")
 
+    # Analyse representation
+    parser.add_argument("--analyse_representation_interval", type=int, default=None,
+                        help="number of timesteps between analysing the latent representation.")
+
     args = parser.parse_args(rest_args)
     args.cuda = torch.cuda.is_available()
-    args.device = torch.cuda.current_device()
-    args.device_name = torch.cuda.get_device_name(args.device)
+    if args.cuda:
+        args.device = torch.cuda.current_device()
+        args.device_name = torch.cuda.get_device_name(args.device)
     return args

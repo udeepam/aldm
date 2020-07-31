@@ -103,8 +103,9 @@ class Learner:
                               entropy_coef=self.args.policy_entropy_coef,
                               kld_coeff=self.args.dvib_beta,
                               sni_coeff=self.args.sni_coeff,
+                              dist_matching_loss=self.args.dist_matching_loss,
                               dist_matching_coeff=self.args.dist_matching_coeff,
-                              num_components=self.args.num_components,
+                              dist_matching_num_components=self.args.dist_matching_num_components,
                               lr=self.args.policy_lr,
                               eps=self.args.policy_eps,
                               max_grad_norm=self.args.policy_max_grad_norm)
@@ -190,10 +191,22 @@ class Learner:
                                           self.args.policy_gae_lambda)
 
             # update actor-critic using policy gradient algo
-            total_loss, value_loss, action_loss, dist_entropy, kld, jsd = self.policy.update(self.rollouts)
+            total_loss, value_loss, action_loss, dist_entropy, kld, dist_matching_loss = self.policy.update(self.rollouts)
 
             # clean up after update
             self.rollouts.after_update()
+
+            # --- ANALYSE REPRESENTATION ---
+
+            # analyse the latent representation mid training
+            if self.args.use_bottleneck and self.args.analyse_representation_interval is not None and self.iter_idx % self.args.analyse_representation_interval == 0:
+                utl_rep.analyse_representation(args=self.args,
+                                               actor_critic=self.policy.actor_critic,
+                                               rollouts=self.rollouts,
+                                               num_updates=self.iter_idx+1,
+                                               device=device,
+                                               use_pca=True,
+                                               use_t_sne=False)
 
             # --- LOGGING ---
 
@@ -219,7 +232,7 @@ class Learner:
                            'losses/action_loss': action_loss,
                            'losses/dist_entropy': dist_entropy,
                            'losses/kld': kld,
-                           'losses/jsd': jsd,
+                           'losses/dist_matching_loss': dist_matching_loss,
                            'train/mean_episodic_return': utl_math.safe_mean([episode_info['r'] for episode_info in episode_info_buf]),
                            'train/mean_episodic_length': utl_math.safe_mean([episode_info['l'] for episode_info in episode_info_buf]),
                            'eval/mean_episodic_return': utl_math.safe_mean([episode_info['r'] for episode_info in eval_episode_info_buf]),
@@ -231,20 +244,31 @@ class Learner:
             if self.iter_idx % self.args.save_interval == 0 or self.iter_idx == self.args.num_updates - 1:
                 torch.save(self.policy.actor_critic.state_dict(), os.path.join(self.save_dir, "policy{0}.h5".format(self.iter_idx)))
 
-
     def test(self):
-        mean_episodic_return = utl_test.test(args=self.args,
-                                             obs_shape=self.envs.observation_space.shape,
-                                             actor_critic=self.policy.actor_critic,
-                                             device=device)
-        # log results from test envs
-        wandb.run.summary["train_mean_episodic_return"] = mean_episodic_return[0]
-        wandb.run.summary["test_mean_episodic_return"]  = mean_episodic_return[1]
+        episodic_return = utl_test.test(args=self.args,
+                                        obs_shape=self.envs.observation_space.shape,
+                                        actor_critic=self.policy.actor_critic,
+                                        device=device)
 
+        # save returns from train and test levels to analyse using interactive mode
+        train_levels = torch.arange(self.args.train_start_level, self.args.train_start_level+self.args.train_num_levels)
+        for i, level in enumerate(train_levels):
+            wandb.log({'test/train_levels': level,
+                       'test/train_returns': episodic_return[0][i]})
+        test_levels = torch.arange(self.args.test_start_level, self.args.test_start_level+self.args.test_num_levels)
+        for i, level in enumerate(test_levels):
+            wandb.log({'test/test_levels': level,
+                       'test/test_returns': episodic_return[1][i]})
+        # log results from test envs
+        wandb.run.summary["train_mean_episodic_return"] = utl_math.safe_mean(episodic_return[0])
+        wandb.run.summary["test_mean_episodic_return"]  = utl_math.safe_mean(episodic_return[1])
 
     def analyse_representation(self):
         # TODO: more methods for analysing the latent representation
         utl_rep.analyse_representation(args=self.args,
                                        actor_critic=self.policy.actor_critic,
                                        rollouts=self.rollouts,
-                                       device=device)
+                                       num_updates=self.iter_idx+1,
+                                       device=device,
+                                       use_pca=True,
+                                       use_t_sne=True)

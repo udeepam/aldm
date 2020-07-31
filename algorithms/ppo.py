@@ -7,6 +7,7 @@ import torch.optim as optim
 
 from pycave.bayes import GMM  # https://pycave.borchero.com/guides/quickstart.html#example
 from torch.distributions import MultivariateNormal
+from torch.distributions.kl import kl_divergence
 from utils.math import js_divergence
 
 
@@ -20,8 +21,9 @@ class PPO():
                  entropy_coef,
                  kld_coeff,
                  sni_coeff,
+                 dist_matching_loss,
                  dist_matching_coeff,
-                 num_components,
+                 dist_matching_num_components,
                  lr=None,
                  eps=None,
                  max_grad_norm=None):
@@ -43,8 +45,9 @@ class PPO():
         # sni parameters
         self.sni_coeff = sni_coeff
         # distribution matching parameters
+        self.dist_matching_loss = dist_matching_loss
         self.dist_matching_coeff = dist_matching_coeff
-        self.num_components= num_components
+        self.dist_matching_num_components= dist_matching_num_components
 
         # optimiser
         self.optimizer = optim.Adam(actor_critic.parameters(), lr=lr, eps=eps)
@@ -62,7 +65,7 @@ class PPO():
         action_loss_epoch = 0
         dist_entropy_epoch = 0
         kld_epoch = 0
-        jsd_epoch = 0
+        dist_matching_loss_epoch = 0
 
         # iterate through experience stored in rollouts
         for _ in range(self.ppo_epoch):
@@ -107,31 +110,38 @@ class PPO():
                 else:
                     kld = torch.tensor(0.)
 
-                # calculate Jensen-Shannon divergence
+                # calculate loss for distribution matching
                 if self.actor_critic.use_distribution_matching:
-                    # forward pass using experience from validation
-                    val_z, val_mu, val_std = self.actor_critic.encode(val_obs_batch)
-                    # TODO: fix grad_fn for pycave
-                    if self.num_components==1:
+                    with torch.no_grad():
+                        # forward pass using experience from validation
+                        val_z, val_mu, val_std = self.actor_critic.encode(val_obs_batch)
+
+                    if self.dist_matching_num_components==1:
                         # fit single multivariate Gaussian using averaged means and stds from train and val
                         train_dist= MultivariateNormal(mu.mean(dim=0), torch.diag(std.mean(dim=0).pow(2)))
                         val_dist= MultivariateNormal(val_mu.mean(dim=0), torch.diag(val_std.mean(dim=0).pow(2)))
-                        jsd = js_divergence(train_dist, val_dist)
-                    elif self.num_components>1:
+                    elif self.dist_matching_num_components>1:
+                        # TODO: fix grad_fn for pycave
                         # fit multivariate mixture of Gaussians to z and val_z
-                        train_gmm = GMM(num_components=self.num_components, num_features=mu.shape[1], covariance='diag')
-                        train_gmm.fit(z)
-                        val_gmm = GMM(num_components=self.num_components, num_features=mu.shape[1], covariance='diag')
-                        val_gmm.fit(val_z)
-                        jsd = js_divergence(train_gmm, val_gmm)
-                else:
-                    jsd = torch.tensor(0.)
+                        train_dist = GMM(num_components=self.dist_matching_num_components, num_features=mu.shape[1], covariance='diag')
+                        train_dist.fit(z)
+                        val_dist = GMM(num_components=self.dist_matching_num_components, num_features=mu.shape[1], covariance='diag')
+                        val_dist.fit(val_z)
 
-                # update actor-critic using PPO
+                    # calculate loss either using KL divergence or Jensen-Shannon divergence
+                    if self.dist_matching_loss == "kld":
+                        # TODO: swap to my implementation of KL when using GMM
+                        dist_matching_loss = kl_divergence(train_dist, val_dist)
+                    elif self.dist_matching_loss == "jsd":
+                        dist_matching_loss = js_divergence(train_dist, val_dist)
+
+                else:
+                    dist_matching_loss = torch.tensor(0.)
+
                 # zero accumulated gradients
                 self.optimizer.zero_grad()
                 # calculate loss
-                loss = action_loss - dist_entropy * self.entropy_coef + value_loss * self.value_loss_coef + kld * self.kld_coeff + jsd * self.dist_matching_coeff
+                loss = action_loss - dist_entropy * self.entropy_coef + value_loss * self.value_loss_coef + kld * self.kld_coeff + dist_matching_loss * self.dist_matching_coeff
                 # backpropogate: calculate gradients
                 loss.backward()
                 # clippling
@@ -145,7 +155,7 @@ class PPO():
                 action_loss_epoch += action_loss.item()
                 dist_entropy_epoch += dist_entropy.item()
                 kld_epoch += kld.item()
-                jsd_epoch += jsd.item()
+                dist_matching_loss_epoch += dist_matching_loss.item()
 
         num_updates = self.ppo_epoch * self.num_mini_batch
 
@@ -155,6 +165,6 @@ class PPO():
         action_loss_epoch /= num_updates
         dist_entropy_epoch /= num_updates
         kld_epoch /= num_updates
-        jsd_epoch /= num_updates
+        dist_matching_loss_epoch /= num_updates
 
-        return total_loss_epoch, value_loss_epoch, action_loss_epoch, dist_entropy_epoch, kld_epoch, jsd_epoch
+        return total_loss_epoch, value_loss_epoch, action_loss_epoch, dist_entropy_epoch, kld_epoch, dist_matching_loss_epoch

@@ -34,25 +34,35 @@ def safe_divide(top, bottom):
     return np.nan if bottom == 0 else top/bottom
 
 
-def kl_divergence(p, q, num_samples=10**2):
+def kl_divergence(p, q, num_samples=10**3):
     """
+    TODO: fix pycave sampling to keep gradients
+
     Reference: https://stackoverflow.com/questions/26079881/kl-divergence-of-two-gmms
 
     KL(p||q) = int p(x) log[p(x) / q(x)] dx = E_p[ log(p(x) / q(x)) ]
 
     Parameters:
     -----------
-    p : `torch.distributions`
-    q : `torch.distributions`
+    p : `torch.distributions` or `pycave.bayes.GMM`
+    q : `torch.distributions` or `pycave.bayes.GMM`
     """
-    x = p.sample((num_samples,))
-    log_p_x = p.log_prob(x)
-    log_q_x = q.log_prob(x)
-    return log_p_x.mean(dim=0) - log_q_x.mean(dim=0)
+    if isinstance(p, pycave.bayes.GMM):
+        x = p.sample(num_samples)
+        log_p_x = -p.evaluate(x, reduction='none')
+        log_q_x = -q.evaluate(x, reduction='none')
+    else:
+        # torch.distributions object
+        x = p.rsample((num_samples,))
+        log_p_x = p.log_prob(x)
+        log_q_x = q.log_prob(x)
+    return log_p_x.mean() - log_q_x.mean()
 
 
 def js_divergence(p, q, num_samples=10**3):
     """
+    TODO: fix pycave sampling to keep gradients
+
     Reference: https://stackoverflow.com/questions/26079881/kl-divergence-of-two-gmms
 
     JS(p||q) = 0.5 * [ KL(p||M) + KL(q||M) ]
@@ -73,11 +83,11 @@ def js_divergence(p, q, num_samples=10**3):
         log_q_y = -q.evaluate(x, reduction='none')
     else:
         # torch.distributions object
-        x = p.sample((num_samples,))
+        x = p.rsample((num_samples,))
         log_p_x = p.log_prob(x)
         log_q_x = q.log_prob(x)
 
-        x = q.sample((num_samples,))
+        x = q.rsample((num_samples,))
         log_p_y = p.log_prob(x)
         log_q_y = q.log_prob(x)
 
