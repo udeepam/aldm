@@ -90,7 +90,7 @@ class RolloutStorage(object):
     def feed_forward_generator(self,
                                advantages,
                                num_train_envs,
-                               use_distribution_matching,
+                               num_val_envs,
                                num_mini_batch=None,
                                mini_batch_size=None):
         """
@@ -107,7 +107,7 @@ class RolloutStorage(object):
                 "".format(num_train_envs, num_steps, num_train_envs * num_steps, num_mini_batch))
             mini_batch_size = batch_size // num_mini_batch
 
-        # get lists of experience for training envs and reshape
+        # get lists of experience for training envs and reshape experience
         obs = self.obs[:, :num_train_envs][:-1].reshape(-1, *self.obs[:, :num_train_envs].size()[2:])
         actions = self.actions[:, :num_train_envs].reshape(-1, self.actions[:, :num_train_envs].size(-1))
         value_preds = self.value_preds[:, :num_train_envs][:-1].reshape(-1, 1)
@@ -118,34 +118,31 @@ class RolloutStorage(object):
                                mini_batch_size,
                                drop_last=True)
 
-        if use_distribution_matching:
-            val_batch_size = (num_processes - num_train_envs) * num_steps
-            # get lists of experience for validation envs and reshape
+        if num_val_envs>0:
+            # get lists of experience for validation envs and reshape experience
             val_obs = self.obs[:, num_train_envs:][:-1].reshape(-1, *self.obs[:, num_train_envs:].size()[2:])
+            val_actions = self.actions[:, num_train_envs:].reshape(-1, self.actions[:, :num_train_envs].size(-1))
             # create validaiton indices sampler
+            val_batch_size = (num_processes - num_train_envs) * num_steps
+            val_mini_batch_size = val_batch_size // num_mini_batch
             val_sampler = BatchSampler(SubsetRandomSampler(range(val_batch_size)),
-                                       int(val_batch_size / (batch_size // mini_batch_size)),
+                                       val_mini_batch_size,
                                        drop_last=True)
         else:
-            val_sampler = torch.zeros(int(batch_size/mini_batch_size))
+            val_sampler = torch.zeros(batch_size // mini_batch_size)
 
         for indices, val_indices in zip(sampler, val_sampler):
-            # reshape experience from training envs
             obs_batch = obs[indices]
             actions_batch = actions[indices]
             value_preds_batch = value_preds[indices]
             return_batch = returns[indices]
             old_action_log_probs_batch = old_action_log_probs[indices]
+            adv_targ = advantages.view(-1, 1)[indices]
 
-            if advantages is None:
-                adv_targ = None
-            else:
-                adv_targ = advantages.view(-1, 1)[indices]
-
-            if use_distribution_matching:
-                # reshape experience from validation envs
+            if num_val_envs>0:
                 val_obs_batch = val_obs[val_indices]
+                val_actions_batch = val_actions[val_indices]
             else:
-                val_obs_batch = None
+                val_obs_batch = val_actions_batch = None
 
-            yield obs_batch, actions_batch, value_preds_batch, return_batch, old_action_log_probs_batch, adv_targ, val_obs_batch
+            yield obs_batch, actions_batch, value_preds_batch, return_batch, old_action_log_probs_batch, adv_targ, val_obs_batch, val_actions_batch

@@ -2,21 +2,12 @@
 Based on https://github.com/ikostrikov/pytorch-a2c-ppo-acktr
          https://github.com/harry-uglow/Curriculum-Reinforcement-Learning
          https://github.com/lmzintgraf/varibad
+
+Modify standard PyTorch distributions so they are compatible with this code:
+- modifies action shape
+- this way also allows wandb logging for the model.
 """
 import torch
-
-
-"""
-Modify standard PyTorch distributions so they are compatible with this code.
-- modifies action shape
-- This way also allows wandb logging for the model.
-"""
-
-#
-# Standardize distribution interfaces
-#
-
-# ---Categorical---
 
 
 class FixedCategorical(torch.distributions.Categorical):

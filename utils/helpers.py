@@ -1,8 +1,7 @@
 import random
 
-import torch
-import torch.nn as nn
 import numpy as np
+import torch
 
 
 def set_global_seed(seed, deterministic_execution=False):
@@ -37,34 +36,23 @@ def sf01(arr):
     return torch.flatten(arr.transpose(0, 1))
 
 
+def reset_envs(envs, device):
+    """
+    Reset OpenAI ProcGen environments by feeding action value of -1
+    to all the enviornments.
+    """
+    action = (torch.zeros(envs.num_envs, 1)-1).to(device)
+    obs, _, _, _ = envs.step(action)
+    return obs
+
+
 # --- Taken from: https://github.com/ikostrikov/pytorch-a2c-ppo-acktr ---
 
 
 def init(module, weight_init, bias_init, gain=1):
+    """
+    Initialisation of the network weights and biases.
+    """
     weight_init(module.weight.data, gain=gain)
     bias_init(module.bias.data)
     return module
-
-
-# Necessary for KFAC implementation.
-class AddBias(nn.Module):
-    def __init__(self, bias):
-        super(AddBias, self).__init__()
-        self._bias = nn.Parameter(bias.unsqueeze(1))
-
-    def forward(self, x):
-        if x.dim() == 2:
-            bias = self._bias.t().view(1, -1)
-        else:
-            bias = self._bias.t().view(1, -1, 1, 1)
-
-        return x + bias
-
-
-def update_linear_schedule(optimizer, epoch, total_num_epochs, initial_lr):
-    """
-    Decreases the learning rate linearly.
-    """
-    lr = initial_lr - (initial_lr * (epoch / float(total_num_epochs)))
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr

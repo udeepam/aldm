@@ -1,11 +1,11 @@
-wandb==0.9.4
+wandb==0.10.0
 numpy==1.18.2
 gym==0.15.7
 procgen==0.10.3
-torch==1.5.1
+torch==1.6.0
 tensorflow==2.2.0
 scipy==1.4.1
-pycave==2.0.2
-MulticoreTSNE==0.1
 matplotlib==3.1.1
 plotly==4.9.0
+scikit-learn==0.23.1
+memory-profiler==0.57.0

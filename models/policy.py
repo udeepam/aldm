@@ -3,7 +3,7 @@ Based on: https://github.com/ikostrikov/pytorch-a2c-ppo-acktr
 """
 import torch.nn as nn
 
-from models.impala_cnn import ResNetBase
+from models.impala_cnn import ImpalaCNN
 from models.bottleneck import Bottleneck
 
 from utils import helpers as utl
@@ -20,30 +20,21 @@ class ACModel(nn.Module):
                  obs_shape,
                  action_space,
                  hidden_size=256,
-                 base=None,
                  use_bottleneck=False,
-                 sni_type=None,
-                 use_distribution_matching=False,
-                 num_train_envs=0):
+                 sni_type=None):
         """
         Actor-critic network.
         """
         super(ACModel, self).__init__()
 
+        self.num_actions = action_space.n
+
         # decide which components are enabled
         self.use_bottleneck = use_bottleneck
         self.sni_type = sni_type
-        self.use_distribution_matching = use_distribution_matching
-
-        # parameters
-        self.num_train_envs = num_train_envs
 
         # define feature extractor
-        if base.startswith('procgen'):
-            self.feature_extractor = ResNetBase(num_inputs=obs_shape[0],
-                                                num_actions=action_space.n)
-        else:
-            raise NotImplementedError
+        self.feature_extractor = ImpalaCNN(num_inputs=obs_shape[0])
 
         # define intermediate layer: bottleneck or linear layer
         if use_bottleneck:
@@ -56,7 +47,7 @@ class ACModel(nn.Module):
         # define critic model
         self.critic_linear = init_(nn.Linear(hidden_size, 1))
         # define actor model
-        self.actor_linear = init_actor_(nn.Linear(hidden_size, action_space.n))
+        self.actor_linear = init_actor_(nn.Linear(hidden_size, self.num_actions))
 
         # intialise output distribution of the actor network
         if action_space.__class__.__name__ == "Discrete":
@@ -101,7 +92,7 @@ class ACModel(nn.Module):
         # get action log probabilities from distribution
         action_log_probs = dist.log_probs(action)
 
-        return value, action, action_log_probs
+        return value, action, action_log_probs, z
 
     def get_value(self, inputs):
         """
@@ -124,7 +115,7 @@ class ACModel(nn.Module):
         actor_features = self.actor_linear(z)
         dist = self.dist(logits=actor_features)
 
-        if self.sni_type == 'dvib':
+        if self.sni_type == 'vib':
             # need both policies for training, but still only one value function:
             value = self.critic_linear(mu)
             actor_features = self.actor_linear(mu)
@@ -134,3 +125,22 @@ class ACModel(nn.Module):
             dist_bar = None
 
         return value, dist, dist_bar, z, mu, std
+
+    def get_analysis(self, inputs):
+        """
+        Forward pass for policy gradient algorithm update.
+        """
+        z, mu, std = self.encode(inputs)
+
+        if self.sni_type is not None:
+            # for any SNI type, the rollout values and actor features are determinisitic
+            actor_features = self.actor_linear(mu)
+        else:
+            actor_features = self.actor_linear(z)
+
+        # create action distribution
+        dist = self.dist(logits=actor_features)
+        # sample actions
+        action = dist.sample()
+
+        return action, z, mu, std

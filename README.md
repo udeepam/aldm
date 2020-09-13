@@ -1,4 +1,6 @@
-# UCL MSc Project
+# UCL MSc Project: Action-specific Latent Distribution Matching
+
+This repository contains code for my UCL MSc in Machine Learning Thesis, 2020. Action-specific latent distribution matching.
 
 ## Requirements
 

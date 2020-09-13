@@ -12,6 +12,9 @@ def boolean_argument(value):
 
 
 def none_or_str(value):
+    """
+    Convert string None to NoneType.
+    """
     if value.lower() == 'none':
         return None
     return value

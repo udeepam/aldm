@@ -29,11 +29,13 @@ class Bottleneck(nn.Module):
     def forward(self, x):
         stats = self.encode(x)
         mu  = stats[:, :self.output_size]
-        std = F.softplus(stats[:, self.output_size:]-5)
+        # softplus transformation with bias of -5.0 to have the stds positive and initially small
+        std = F.softplus(stats[:, self.output_size:]-5.0)
         # get epsilon from standard normal
         eps = torch.randn_like(std)
         # reparameterisation trick
         z = mu + std*eps
+
         return z, mu, std
 
     def weight_init(self):
@@ -68,12 +70,22 @@ class Bottleneck(nn.Module):
 
 # # approach 3
 # start_time = time.time()
-# kld = 0.5 * torch.sum(mu.pow(2) + std.pow(2) - 2*std.log() - 1, dim=1)
+# scale_tril = torch.diag_embed(std).to(device)
+# prior = MultivariateNormal(torch.zeros(self.output_size).to(device), scale_tril=torch.eye(self.output_size).to(device))
+# dist  = MultivariateNormal(mu, scale_tril=scale_tril)
+# kld = kl_divergence(dist, prior)
 # kld = kld.mean()
 # print(kld)
 # print(time.time()-start_time)
 
 # # approach 4
+# start_time = time.time()
+# kld = 0.5 * torch.sum(mu.pow(2) + std.pow(2) - 2*std.log() - 1, dim=1)
+# kld = kld.mean()
+# print(kld)
+# print(time.time()-start_time)
+
+# # approach 5
 # start_time = time.time()
 # kld = kl_divergence_(dist, prior)
 # kld = kld.mean()

@@ -68,12 +68,12 @@ class Conv2d_tf(nn.Conv2d):
                         groups=self.groups)
 
 
-class BasicBlock(nn.Module):
+class ResidualBlock(nn.Module):
     """
     Residual Network Block
     """
     def __init__(self, n_channels, stride=1):
-        super(BasicBlock, self).__init__()
+        super(ResidualBlock, self).__init__()
 
         self.conv1 = Conv2d_tf(n_channels, n_channels, kernel_size=3, stride=1, padding=(1, 1))
         self.relu = nn.ReLU(inplace=True)
@@ -96,9 +96,9 @@ class BasicBlock(nn.Module):
         return out
 
 
-class ResNetBase(nn.Module):
+class ImpalaCNN(nn.Module):
     """
-    Residual Network
+    Impala CNN.
 
     For helpful image of network:
     https://medium.com/aureliantactics/custom-models-with-baselines-impala-cnn-cnns-with-features-and-contra-3-hard-mode-811dbdf2dff9
@@ -107,11 +107,9 @@ class ResNetBase(nn.Module):
     ----------
     num_inputs : `int`
         Number of channels in the input image.
-    num_actions : `int`
-        Size of actions space (Discrete) which is the output of actor network.
     """
-    def __init__(self, num_inputs, num_actions, channels=[16, 32, 32]):
-        super(ResNetBase, self).__init__()
+    def __init__(self, num_inputs, channels=[16, 32, 32]):
+        super(ImpalaCNN, self).__init__()
 
         # define Impala CNN
         self.layer1 = self._make_layer(num_inputs, channels[0])
@@ -132,8 +130,8 @@ class ResNetBase(nn.Module):
         layers.append(Conv2d_tf(in_channels, out_channels, kernel_size=3, stride=1))
         layers.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
 
-        layers.append(BasicBlock(out_channels))
-        layers.append(BasicBlock(out_channels))
+        layers.append(ResidualBlock(out_channels))
+        layers.append(ResidualBlock(out_channels))
 
         return nn.Sequential(*layers)
 

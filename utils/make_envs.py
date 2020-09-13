@@ -8,34 +8,7 @@ import numpy as np
 
 from procgen import ProcgenEnv
 
-from baselines.common.vec_env.dummy_vec_env import DummyVecEnv
-from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from baselines.common.vec_env import VecEnvWrapper, VecMonitor, VecNormalize, VecExtractDictObs
-
-
-def make_env(env_name,
-             start_level,
-             num_levels,
-             distribution_mode,
-             paint_vel_info):
-    """
-    Make a single environment.
-    """
-    def _thunk():
-
-        if env_name.startswith('procgen'):
-            # generate OpenAI Procgen environment.
-            env = gym.make(env_name,
-                           start_level=start_level,
-                           num_levels=num_levels,
-                           distribution_mode=distribution_mode,
-                           paint_vel_info=paint_vel_info)
-        else:
-            raise NotImplementedError
-
-        return env
-
-    return _thunk
 
 
 def make_vec_envs(env_name,
@@ -44,12 +17,8 @@ def make_vec_envs(env_name,
                   distribution_mode,
                   paint_vel_info,
                   num_processes,
-                  log_dir,
-                  device,
                   num_frame_stack,
-                  use_distribution_matching=False,
-                  percentage_levels_train=None,
-                  num_val_envs=None):
+                  device,):
     """
     Make vector of environments.
 
@@ -68,60 +37,25 @@ def make_vec_envs(env_name,
     num_processes : `int`
         How many training CPU processes to use (default: 64).
         This will give the number of environments to make.
-    log_dir : `str`
-        Directory to save agents logs.
-    device : `torch.device`
-        CPU or GPU.
     num_frame_stack : `int`
         Number of frames to stack for VecFrameStack wrapper (default: 0).
-    use_distribution_matching : `Boolean`
-        Whether current model is using distribution matching.
-    percentage_levels_train : `float` or `NoneType`
-        Proportion of the train levels to use for train and the rest is used for validation.
-    num_val_envs : `int` or `NoneType`
-        Number of environments from num_processes to use for validation and the rest are used for train.
+    device : `torch.device`
+        CPU or GPU.
 
     Returns:
     --------
     env :
         Vector of environments.
     """
-    # generate list of environments
-    if use_distribution_matching:
-        train_start_level = start_level
-        train_num_levels = int(num_levels * percentage_levels_train)
-        val_start_level = start_level + train_num_levels
-        val_num_levels = num_levels - train_num_levels
+    envs = ProcgenEnv(num_envs=num_processes,
+                      env_name=env_name,
+                      start_level=start_level,
+                      num_levels=num_levels,
+                      distribution_mode=distribution_mode,
+                      paint_vel_info=paint_vel_info)
 
-        # make the (num_processes-num_val_envs) train_envs and  num_val_envs val_envs
-        envs = [make_env(env_name=env_name,
-                         start_level=train_start_level if i<=num_processes-num_val_envs-1 else val_start_level,
-                         num_levels=train_num_levels if i<=num_processes-num_val_envs-1 else val_num_levels,
-                         distribution_mode=distribution_mode,
-                         paint_vel_info=paint_vel_info) for i in range(num_processes)]
-
-        # vectorise environments
-        if len(envs) > 1:
-            # create a multiprocess vectorised wrapper for multiple environments,
-            # distributing each environment to its own process
-            envs = SubprocVecEnv(envs)
-        else:
-            # create a simple vectorised wrapper for multiple environments,
-            # calling each environment in sequence on the current Python process.
-            envs = DummyVecEnv(envs)
-
-    else:
-        if env_name == "procgen:procgen-coinrun-v0":
-            env_name = "coinrun"
-        envs = ProcgenEnv(num_envs=num_processes,
-                          env_name=env_name,
-                          start_level=start_level,
-                          num_levels=num_levels,
-                          distribution_mode=distribution_mode,
-                          paint_vel_info=paint_vel_info)
-
-        # extract image from dict
-        envs = VecExtractDictObs(envs, "rgb")
+    # extract image from dict
+    envs = VecExtractDictObs(envs, "rgb")
 
     # re-order channels, (H,W,C) => (C,H,W).
     # required for PyTorch convolution layers.
@@ -132,7 +66,6 @@ def make_vec_envs(env_name,
     #  2. episode length
     #  3. episode time taken
     envs = VecMonitor(venv=envs,
-                      filename=log_dir,
                       keep_buf=100)
 
     # normalise the rewards
@@ -277,82 +210,87 @@ class VecPyTorchFrameStack(VecEnvWrapper):
         self.venv.close()
 
 
-# from procgen import ProcgenEnv
-# from baselines.common.vec_env import VecEnvWrapper, VecExtractDictObs, VecMonitor, VecNormalize
-# def make_vec_envs(env_name,
-#                   start_level,
-#                   num_levels,
-#                   distribution_mode,
-#                   paint_vel_info,
-#                   num_processes,
-#                   log_dir,
-#                   device,
-#                   num_frame_stack):
-#     """
-#     Make vector of environments.
+def make_rep_analysis_envs(args, device):
+    """
+    Make environments required for analysing the latent representation.
+    """
+    if args.num_val_envs>0:
+        train_num_levels = int(args.train_num_levels * args.percentage_levels_train)
+        # validation
+        val_start_level = args.train_start_level + train_num_levels
+        val_num_levels = args.train_num_levels - train_num_levels
+        # train 1
+        train1_num_levels = int(train_num_levels/2)
+        # train 2
+        train2_start_level = args.train_start_level + train1_num_levels
+        train2_num_levels = train_num_levels - train1_num_levels
+        # create envs
+        num_train1_envs = int(args.num_train_envs/2)
+        num_train2_envs = args.num_train_envs - num_train1_envs
+        train1_envs = make_vec_envs(env_name=args.env_name,
+                                    start_level=args.train_start_level,
+                                    num_levels=train1_num_levels,
+                                    distribution_mode=args.distribution_mode,
+                                    paint_vel_info=args.paint_vel_info,
+                                    num_processes=num_train1_envs,
+                                    num_frame_stack=args.num_frame_stack,
+                                    device=device)
+        train2_envs = make_vec_envs(env_name=args.env_name,
+                                    start_level=train2_start_level,
+                                    num_levels=train2_num_levels,
+                                    distribution_mode=args.distribution_mode,
+                                    paint_vel_info=args.paint_vel_info,
+                                    num_processes=num_train2_envs,
+                                    num_frame_stack=args.num_frame_stack,
+                                    device=device)
+        val_envs = make_vec_envs(env_name=args.env_name,
+                                 start_level=val_start_level,
+                                 num_levels=val_num_levels,
+                                 distribution_mode=args.distribution_mode,
+                                 paint_vel_info=args.paint_vel_info,
+                                 num_processes=args.num_val_envs,
+                                 num_frame_stack=args.num_frame_stack,
+                                 device=device)
+        _ = train1_envs.reset()
+        _ = train2_envs.reset()
+        _ = val_envs.reset()
+    else:
+        # train 1
+        train1_num_levels = int(args.train_num_levels/2)
+        # train 2
+        train2_start_level = args.train_start_level + train1_num_levels
+        train2_num_levels = args.train_num_levels - train1_num_levels
+        # create envs
+        num_train1_envs = int(args.num_train_envs/2)
+        num_train2_envs = args.num_train_envs - num_train1_envs
+        train1_envs = make_vec_envs(env_name=args.env_name,
+                                    start_level=args.train_start_level,
+                                    num_levels=train1_num_levels,
+                                    distribution_mode=args.distribution_mode,
+                                    paint_vel_info=args.paint_vel_info,
+                                    num_processes=num_train1_envs,
+                                    num_frame_stack=args.num_frame_stack,
+                                    device=device)
+        train2_envs = make_vec_envs(env_name=args.env_name,
+                                    start_level=train2_start_level,
+                                    num_levels=train2_num_levels,
+                                    distribution_mode=args.distribution_mode,
+                                    paint_vel_info=args.paint_vel_info,
+                                    num_processes=num_train2_envs,
+                                    num_frame_stack=args.num_frame_stack,
+                                    device=device)
+        val_envs = None
+        _ = train1_envs.reset()
+        _ = train2_envs.reset()
 
-#     Parameters:
-#     -----------
-#     env_name : `str`
-#         Name of environment to train on.
-#     start_level : `int`
-#         The point in the list of levels available to the environment at which to index into.
-#     num_levels : `int`
-#         The number of unique levels that can be generated. Set to 0 to use unlimited levels.
-#     distribution_mode : `str`
-#         What variant of the levels to use {easy, hard, extreme, memory, exploration}.
-#     paint_vel_info : `Boolean`
-#         Paint player velocity info in the top left corner. Only supported by certain games.
-#     num_processes : `int`
-#         How many training CPU processes to use (default: 16).
-#         This will give the number of environments to make.
-#     log_dir : `str` or `NoneType`
-#         Directory to save agents logs.
-#     device : `torch.device`
-#         CPU or GPU.
-#     num_frame_stack : `int`
-#         Number of frames to stack for VecFrameStack wrapper (default: 0).
+    test_envs = make_vec_envs(env_name=args.env_name,
+                              start_level=args.test_start_level,
+                              num_levels=args.test_num_levels,
+                              distribution_mode=args.distribution_mode,
+                              paint_vel_info=args.paint_vel_info,
+                              num_processes=args.num_train_envs,
+                              num_frame_stack=args.num_frame_stack,
+                              device=device)
+    _ = test_envs.reset()
 
-#     Returns:
-#     --------
-#     env :
-#         Vector of environments.
-#     """
-#     if env_name in ['coinrun', 'maze']:
-#         # generate OpenAI Procgen environments.
-#         envs = ProcgenEnv(num_envs=num_processes,
-#                           env_name=env_name,
-#                           start_level=start_level,
-#                           num_levels=num_levels,
-#                           distribution_mode=distribution_mode,
-#                           paint_vel_info=paint_vel_info)
-
-#         # extract image from dict
-#         envs = VecExtractDictObs(envs, "rgb")
-
-#         # re-order channels, (H,W,C) => (C,H,W).
-#         # required for PyTorch convolution layers.
-#         envs = VecTransposeImage(envs)
-#     else:
-#         raise NotImplementedError
-
-#     # records:
-#     #  1. episode reward,
-#     #  2. episode length
-#     #  3. episode time taken
-#     envs = VecMonitor(venv=envs,
-#                       filename=log_dir,
-#                       keep_buf=100)
-
-#     # normalise the rewards
-#     # we don't normalise the obs as the network does this /255.
-#     envs = VecNormalize(envs, ob=False)
-
-#     # wrapper to convert observation arrays to torch.tensors
-#     envs = VecPyTorch(envs, device)
-
-#     # Frame stacking wrapper for vectorized environment
-#     if num_frame_stack !=0:
-#         envs = VecPyTorchFrameStack(envs, num_frame_stack, device)
-
-#     return envs
+    return train1_envs, train2_envs, val_envs, test_envs

@@ -5,8 +5,8 @@ import torch
 from utils.cli import boolean_argument, none_or_str
 
 
-def get_args(rest_args):
-    parser = argparse.ArgumentParser()
+def get_args(rest_args=None):
+    parser = argparse.ArgumentParser(conflict_handler='resolve')
 
     # --- GENERAL ---
 
@@ -17,6 +17,10 @@ def get_args(rest_args):
     # test parameters
     parser.add_argument('--test', type=boolean_argument, default=False,
                         help='whether to test the environment on the train levels and held-out levels of same size sequentially.')
+    parser.add_argument("--num_levels2plot", type=int, default=5,
+                        help="number of levels to plot for train and test each. Must have --test=True.")
+    parser.add_argument("--plot_pca", type=boolean_argument, default=False,
+                        help="plot pca of latent representation.")
 
     # environment: --env_name assigned in main.py
     parser.add_argument('--distribution_mode', type=str, default='easy',
@@ -40,44 +44,42 @@ def get_args(rest_args):
     # general settings
     parser.add_argument('--seed', type=int, default=10,
                         help='random seed (default: 10).')
-    parser.add_argument('--num_processes', type=int, default=64,
-                        help='how many training CPU processes to use (default: 64.')
     parser.add_argument('--deterministic_execution', type=boolean_argument, default=False,
                         help='Make code fully deterministic. Expects 1 process and uses deterministic CUDNN.')
+    parser.add_argument('--num_processes', type=int, default=64,
+                        help='how many training CPU processes to use (default: 64.')
     parser.add_argument('--num_frame_stack', type=int, default=0,
                         help='number of frames to stack for environments (default: 0).')
 
     # --- BOTTLENECK ---
-    parser.add_argument("--use_bottleneck", type=boolean_argument, default=True,
-                        help='Whether to use the variational information bottleneck (default: True).')
-    parser.add_argument("--dvib_beta", type=float, default=1e-4,
-                        help='DVIB coefficient in front of KL divergence term in loss. Operates as a trade-off \
+    parser.add_argument("--use_bottleneck", type=boolean_argument, default=False,
+                        help='Whether to use the variational information bottleneck (default: False).')
+    parser.add_argument("--vib_coef", type=float, default=0,
+                        help='VIB coefficient in front of KL divergence term in loss. Operates as a trade-off \
                               parameter between the complexity rate of the representation I(s;z) and the \
                               amount of preserved relevant information I(a;z).')
 
     # --- SNI ---
-    parser.add_argument("--sni_type", type=none_or_str, default='dvib',
-                        help='Type of selective noise injection {None, dvib}.')
-    parser.add_argument("--sni_coeff", type=float, default=0.5,
+    parser.add_argument("--sni_type", type=none_or_str, default=None,
+                        help='Type of selective noise injection {None, vib}.')
+    parser.add_argument("--sni_coef", type=float, default=0,
                         help='Coefficient for SNI.')
 
     # --- DISTRIBUTION MATCHING ---
-    parser.add_argument("--use_distribution_matching", type=boolean_argument, default=False,
+    parser.add_argument("--use_dist_matching", type=boolean_argument, default=False,
                         help='Whether to use distribution matching.')
-    parser.add_argument("--dist_matching_loss", type=str, default="kld",
-                        help='Which divergence to use for calculating the loss for distribution matching {kld, jsd}.')
+
+    # hyperparameters
+    parser.add_argument("--dist_matching_loss", type=str, default="kl",
+                        help='Which divergence to use for calculating the loss for distribution matching {kl, jsd}.')
+    parser.add_argument("--dist_matching_coef", type=float, default=0,
+                        help='Coefficient in front distribution matching loss term.')
 
     # splitting train levels
     parser.add_argument("--percentage_levels_train", type=float, default=1.0,
                         help='Proportion of the train levels to use for train and the rest is used for validation. Range is [0,1]')
     parser.add_argument("--num_val_envs", type=int, default=0,
                         help='Number of environments from --num_processes to use for validation.')
-
-    # hyperparameters
-    parser.add_argument("--dist_matching_coeff", type=float, default=0,
-                        help='Coefficient in front distribution matching loss term.')
-    parser.add_argument("--dist_matching_num_components", type=int, default=0,
-                        help='Number of mixture Gaussian mixture components.')
 
     # --- POLICY ---
 
@@ -117,10 +119,10 @@ def get_args(rest_args):
     # --- OTHER ---
 
     # logging, saving and evaluation
-    parser.add_argument('--log_interval', type=int, default=1,
+    parser.add_argument('--log_interval', type=int, default=10,
                         help='number of timesteps between logging events (default: 10).')
-    parser.add_argument('--save_interval', type=int, default=500,
-                        help='number of timesteps between saving events (default: 500).')
+    parser.add_argument('--save_interval', type=int, default=2000,
+                        help='number of timesteps between saving events (default: 2000).')
 
     # Weights & Biases logging
     parser.add_argument("--proj_name", type=str, default='ucl_msc_proj',
@@ -131,12 +133,12 @@ def get_args(rest_args):
                         help="a string by which to group other runs.")
 
     # Analyse representation
-    parser.add_argument("--analyse_representation_interval", type=int, default=None,
-                        help="number of timesteps between analysing the latent representation.")
+    parser.add_argument("--analyse_rep", type=boolean_argument, default=False,
+                        help="whether to analyse the latent representation or not.")
 
-    args = parser.parse_args(rest_args)
-    args.cuda = torch.cuda.is_available()
-    if args.cuda:
-        args.device = torch.cuda.current_device()
-        args.device_name = torch.cuda.get_device_name(args.device)
-    return args
+    if rest_args is not None:
+        args = parser.parse_args(rest_args)
+        args.cuda = torch.cuda.is_available()
+        return args
+    else:
+        return parser

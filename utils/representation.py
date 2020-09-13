@@ -1,165 +1,220 @@
+from collections import defaultdict
+
+import numpy as np
 import torch
 from torch.utils.data.sampler import BatchSampler, SequentialSampler
+from torch.distributions import MultivariateNormal
+from torch.distributions.kl import kl_divergence
+
 from matplotlib import pyplot as plt
 import plotly.graph_objects as go
 
 import wandb
 
-from MulticoreTSNE import MulticoreTSNE as TSNE
 from sklearn.decomposition import PCA
 
-from utils.make_envs import make_vec_envs
+from utils import math as utl_math
+from utils.helpers import reset_envs
 
 
-def analyse_representation(args, actor_critic, rollouts, num_updates, device, use_pca=True, use_t_sne=True):
+def analyse_rep(args,
+                train1_envs,
+                train2_envs,
+                val_envs,
+                test_envs,
+                actor_critic,
+                device):
     """
-    Methods for analysing the representation:
-    1. t-SNE or PCA
-    2. JSD
-    3. Cycle consistency
-    """
-    # --- GATHER TEST DATA ----
+    Analyse the latent representation using KL divergence.
 
+    TODO: important to note the mini_batch_size for this as it means how we calculate the divergences.
+          atm think its too small
+    """
     # put actor-critic into evaluation mode
     actor_critic.eval()
-    # initialise environments for gathering data for analysing representation
-    test_envs = make_vec_envs(env_name=args.env_name,
-                              start_level=args.test_start_level,
-                              num_levels=args.test_num_levels,
-                              distribution_mode=args.distribution_mode,
-                              paint_vel_info=args.paint_vel_info,
-                              num_processes=args.num_processes,
-                              log_dir=None,
-                              device=device,
-                              num_frame_stack=args.num_frame_stack)
+
+    # --- GATHER TRAIN DATA ----
+
+    num_train1_envs = train1_envs.num_envs
     # create list to store test env observations
-    test_obs = torch.zeros(args.policy_num_steps, args.num_processes, *test_envs.observation_space.shape).to(device)
+    train_obs = torch.zeros(args.policy_num_steps, args.num_processes, *train1_envs.observation_space.shape).to(device)
     # reset environments
-    obs = test_envs.reset()  # obs.shape = (n_env,C,H,W)
+    if args.num_val_envs>0:
+        obs = torch.cat([reset_envs(train1_envs, device), reset_envs(train2_envs, device), reset_envs(val_envs, device)])  # obs.shape = (n_envs,C,H,W)
+    else:
+        obs = torch.cat([reset_envs(train1_envs, device), reset_envs(train2_envs, device)])  # obs.shape = (n_envs,C,H,W)
     obs = obs.to(device)
-    # collect returns from 10 full episodes
+    # rollout policy to collect experience
     for step in range(args.policy_num_steps):
         # sample actions from policy
         with torch.no_grad():
-            # determinism can lead to subpar performance
-            _, action, _ = actor_critic.act(obs)
+            _, action, _, _ = actor_critic.act(obs)
+        # observe rewards and next obs
+        if args.num_val_envs>0:
+            obs, _, _, _ = train1_envs.step(action[:num_train1_envs, :])
+            train2_obs, _, _, _ = train2_envs.step(action[num_train1_envs:args.num_train_envs, :])
+            val_obs, _, _, _ = val_envs.step(action[args.num_train_envs:, :])
+            obs = torch.cat([obs, train2_obs, val_obs])
+        else:
+            obs, _, _, _ = train1_envs.step(action[:num_train1_envs, :])
+            train2_obs, _, _, _ = train2_envs.step(action[num_train1_envs:, :])
+            obs = torch.cat([obs, train2_obs])
+        # store obs
+        train_obs[step].copy_(obs)
+
+    # --- GATHER TEST DATA ----
+
+    # create list to store test env observations
+    test_obs = torch.zeros(args.policy_num_steps, args.num_train_envs, *test_envs.observation_space.shape).to(device)
+    # reset environments
+    obs = reset_envs(test_envs, device)  # obs.shape = (n_env,C,H,W)
+    obs = obs.to(device)
+    # rollout policy to collect experience
+    for step in range(args.policy_num_steps):
+        # sample actions from policy
+        with torch.no_grad():
+            _, action, _, _ = actor_critic.act(obs)
         # observe rewards and next obs
         obs, _, _, _ = test_envs.step(action)
         # store obs
         test_obs[step].copy_(obs)
-    test_envs.close()
 
     # --- GET LATENT REPRESENTATION ---
 
-    # use most recent experience in storage
-    train_obs = rollouts.obs[:-1].reshape(-1, *rollouts.obs.size()[2:])
+    train1_obs = train_obs[:, :num_train1_envs].reshape(-1, *train_obs[:, :num_train1_envs].size()[2:])
+    train2_obs = train_obs[:, num_train1_envs:args.num_train_envs].reshape(-1, *train_obs[:, num_train1_envs:args.num_train_envs].size()[2:])
     test_obs = test_obs.reshape(-1, *test_obs.size()[2:])
     # create train indices sampler
-    sampler = BatchSampler(SequentialSampler(range(train_obs.shape[0])),
-                           256,
-                           drop_last=False)
-    z = torch.zeros(2*args.num_processes*args.policy_num_steps, args.hidden_size)
-    for i, indices in enumerate(sampler):
-        # encode observations
+    train_batch_size = num_train1_envs * args.policy_num_steps
+    train_mini_batch_size = train_batch_size // args.policy_num_mini_batch
+    train_sampler = BatchSampler(SequentialSampler(range(train_batch_size)),
+                                 train_mini_batch_size,
+                                 drop_last=True)
+    # create test indices sampler
+    test_batch_size = args.num_train_envs * args.policy_num_steps
+    test_mini_batch_size = test_batch_size // args.policy_num_mini_batch
+    test_sampler = BatchSampler(SequentialSampler(range(test_batch_size)),
+                                test_mini_batch_size,
+                                drop_last=True)
+    # get validation
+    if args.num_val_envs>0:
+        val_obs = train_obs[:, args.num_train_envs:].reshape(-1, *train_obs[:, args.num_train_envs:].size()[2:])
+        val_batch_size = (args.num_processes - args.num_train_envs) * args.policy_num_steps
+        val_mini_batch_size = val_batch_size // args.policy_num_mini_batch
+        val_sampler = BatchSampler(SequentialSampler(range(val_batch_size)),
+                                   val_mini_batch_size,
+                                   drop_last=True)
+    else:
+        val_sampler = torch.zeros(int(train_batch_size/train_mini_batch_size)+1)
+
+    # initialise values
+    measures = defaultdict(list)
+    for i, (train_indices, val_indices, test_indices) in enumerate(zip(train_sampler, val_sampler, test_sampler)):
         with torch.no_grad():
-            train_z, _, _ = actor_critic.encode(train_obs[indices])
-            test_z, _, _ = actor_critic.encode(test_obs[indices])
-        z[i*256:(i+1)*256].copy_(train_z)
-        z[args.num_processes*args.policy_num_steps+i*256:args.num_processes*args.policy_num_steps+(i+1)*256].copy_(test_z)
+            # encode train and test observations
+            train1_action, train1_z, train1_mu, train1_std = actor_critic.get_analysis(train1_obs[train_indices])
+            train2_action, train2_z, train2_mu, train2_std = actor_critic.get_analysis(train2_obs[train_indices])
+            test_action, test_z, test_mu, test_std = actor_critic.get_analysis(test_obs[test_indices])
+            # create full train
+            train_z = torch.cat([train1_z, train2_z])
+            train_mu = torch.cat([train1_mu, train2_mu])
+            train_std = torch.cat([train1_std, train2_std])
+            train_action = torch.cat([train1_action, train2_action])
+            # encode val observations
+            if args.num_val_envs>0:
+                val_action, val_z, val_mu, val_std = actor_critic.get_analysis(val_obs[val_indices])
 
-    # --- ANALYSE LATENT REPRESENTATION ----
+        # --- ANALYSE LATENT REPRESENTATION ---
 
-    # pca
-    if use_pca:
-        pca(args, num_updates, z)
-    # t-sne
-    if use_t_sne:
-        t_sne(args, num_updates, z)
+        # calculate KL between train and prior
+        measures['train_prior_kl'].append(0.5 * torch.sum(train_mu.pow(2) + train_std.pow(2) - 2*train_std.log() - 1, dim=1).mean())
+        # calculate KL between test and prior
+        measures['test_prior_kl'].append(0.5 * torch.sum(test_mu.pow(2) + test_std.pow(2) - 2*test_std.log() - 1, dim=1).mean())
+        # calculate KL between first half of train and second half of train
+        train1_dist = MultivariateNormal(train1_z.mean(dim=0), scale_tril=torch.diag(train1_z.std(dim=0)))
+        train2_dist = MultivariateNormal(train2_z.mean(dim=0), scale_tril=torch.diag(train2_z.std(dim=0)))
+        measures['inter_train_kl'].append(kl_divergence(train1_dist, train2_dist).mean())
+        # calculate KL between train and test
+        train_dist = MultivariateNormal(train_z.mean(dim=0), scale_tril=torch.diag(train_z.std(dim=0)))
+        test_dist  = MultivariateNormal(test_z.mean(dim=0), scale_tril=torch.diag(test_z.std(dim=0)))
+        measures['train_test_kl'].append(kl_divergence(train_dist, test_dist).mean())
+        # get KL between train and test for each action
+        for j in range(test_envs.action_space.n):
+            train_z_action = train_z[(train_action==j).squeeze(), :]
+            test_z_action  = test_z[(test_action==j).squeeze(), :]
+            if len(train_z_action)<2 or len(test_z_action)<2:
+                measures['train_test_'+str(j)+"_kl"]
+            else:
+                train_dist = MultivariateNormal(train_z_action.mean(dim=0), scale_tril=torch.diag(train_z_action.std(dim=0)))
+                test_dist  = MultivariateNormal(test_z_action.mean(dim=0), scale_tril=torch.diag(test_z_action.std(dim=0)))
+                measures['train_test_'+str(j)+"_kl"].append(kl_divergence(train_dist, test_dist).mean())
+        if args.num_val_envs>0:
+            # calculate KL between val and prior
+            measures['val_prior_kl'].append(0.5 * torch.sum(val_mu.pow(2) + val_std.pow(2) - 2*val_std.log() - 1, dim=1).mean())
+            # calculate KL between train and val
+            val_dist  = MultivariateNormal(val_z.mean(dim=0), scale_tril=torch.diag(val_z.std(dim=0)))
+            measures['train_val_kl'].append(kl_divergence(train_dist, val_dist).mean())
+            # get KL between train and val for each action
+            for j in range(test_envs.action_space.n):
+                train_z_action = train_z[(train_action==j).squeeze(), :]
+                val_z_action  = val_z[(val_action==j).squeeze(), :]
+                if len(train_z_action)<2 or len(val_z_action)<2:
+                    measures['train_val_'+str(j)+"_kl"]
+                else:
+                    train_dist = MultivariateNormal(train_z_action.mean(dim=0), scale_tril=torch.diag(train_z_action.std(dim=0)))
+                    test_dist  = MultivariateNormal(val_z_action.mean(dim=0), scale_tril=torch.diag(val_z_action.std(dim=0)))
+                    measures['train_val_'+str(j)+"_kl"].append(kl_divergence(train_dist, test_dist).mean())
+    # calculate mean of measures
+    new_measures = dict()
+    for key, val in measures.items():
+        if len(val)!=0:
+            new_measures[key] = utl_math.safe_torch_mean(torch.stack(val))
+        else:
+            new_measures[key] = np.nan
+
+    return new_measures
 
 
-def pca(args, num_updates, z):
+def pca(args, latents_z):
+    """
+    latents_z : `dict` of `torch.Tensor`
+    """
+    # concatenate latents from all sources and bring to cpu
+    z = torch.cat(list(latents_z.values())).cpu()
+
     # project down latent space down to 2D
     embeddings = PCA(n_components=2).fit_transform(z)
 
-    # plot embeddings
-    train_obs = args.num_train_envs * args.policy_num_steps
-    test_obs = args.num_processes * args.policy_num_steps
+    # replace latents with the pca embeddings
+    start = 0
+    pca_z = dict()
+    for key, val in latents_z.items():
+        pca_z[key] = embeddings[start:start+val.shape[0]]
+        start += val.shape[0]
 
     # plotly
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=embeddings[:train_obs, 0],
-                             y=embeddings[:train_obs, 1],
-                             mode='markers',
-                             name='Train'))
-    if args.use_distribution_matching:
-        fig.add_trace(go.Scatter(x=embeddings[train_obs:test_obs, 0],
-                                 y=embeddings[train_obs:test_obs, 1],
+    for key, val in pca_z.items():
+        fig.add_trace(go.Scatter(x=val[:, 0],
+                                 y=val[:, 1],
                                  mode='markers',
-                                 name='Validation'))
-    fig.add_trace(go.Scatter(x=embeddings[test_obs:, 0],
-                             y=embeddings[test_obs:, 1],
-                             mode='markers',
-                             name='Test'))
-    fig.update_layout(title={'text': "PCA plot of Latent Representation after "+str(num_updates)+" updates",
+                                 name=key))
+    fig.update_layout(title={'text': "PCA plot of Train and Test Latent Representation",
                              'y': 0.9,
                              'x': 0.5,
                              'xanchor': 'center',
                              'yanchor': 'top'})
 
     # matplotlib
+    color = ['b', 'r'] if len(latents_z)==2 else ['b', 'orange', 'r'] if len(latents_z)==3 else ['b', 'y', 'g', 'r']
     plt.rcParams.update({'font.size': 13})
     plt.figure(figsize=(10, 10))
-    plt.scatter(embeddings[:train_obs, 0], embeddings[:train_obs, 1], color='b', marker='.', label='Train')
-    if args.use_distribution_matching:
-        plt.scatter(embeddings[train_obs:test_obs, 0], embeddings[train_obs:test_obs, 1], color='orange', marker='.', label='Validation')
-    plt.scatter(embeddings[test_obs:, 0], embeddings[test_obs:, 1], color='r', marker='.', label='Test')
-    plt.title("PCA plot of Latent Representation after "+str(num_updates)+" updates")
+    for i, (key, val) in enumerate(pca_z.items()):
+        plt.scatter(val[:, 0], val[:, 1], color=color[i], marker='.', label=key)
+    plt.title("PCA plot of Train and Test Latent Representation")
     plt.legend()
     plt.grid()
 
-    # save plots
-    wandb.log({"pca_plotly_"+str(num_updates): fig, "pca_plot_"+str(num_updates): wandb.Image(plt)})
-
-
-def t_sne(args, num_updates, z):
-    # project down latent space down to 2D
-    embeddings = TSNE(n_jobs=args.num_processes).fit_transform(z)
-
-    # plot embeddings
-    train_obs = args.num_train_envs * args.policy_num_steps
-    test_obs = args.num_processes * args.policy_num_steps
-
-    # plotly
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=embeddings[:train_obs, 0],
-                             y=embeddings[:train_obs, 1],
-                             mode='markers',
-                             name='Train'))
-    if args.use_distribution_matching:
-        fig.add_trace(go.Scatter(x=embeddings[train_obs:test_obs, 0],
-                                 y=embeddings[train_obs:test_obs, 1],
-                                 mode='markers',
-                                 name='Validation'))
-    fig.add_trace(go.Scatter(x=embeddings[test_obs:, 0],
-                             y=embeddings[test_obs:, 1],
-                             mode='markers',
-                             name='Test'))
-    fig.update_layout(title={'text': "t-SNE plot of Latent Representation after "+str(num_updates)+" updates",
-                             'y': 0.9,
-                             'x': 0.5,
-                             'xanchor': 'center',
-                             'yanchor': 'top'})
-
-    # matplotlib
-    plt.rcParams.update({'font.size': 13})
-    plt.figure(figsize=(10, 10))
-    plt.scatter(embeddings[:train_obs, 0], embeddings[:train_obs, 1], color='b', marker='.', label='Train')
-    if args.use_distribution_matching:
-        plt.scatter(embeddings[train_obs:test_obs, 0], embeddings[train_obs:test_obs, 1], color='orange', marker='.', label='Validation')
-    plt.scatter(embeddings[test_obs:, 0], embeddings[test_obs:, 1], color='r', marker='.', label='Test')
-    plt.title("t-SNE plot of Latent Representation after "+str(num_updates)+" updates")
-    plt.legend()
-    plt.grid()
-
-    # save plots
-    wandb.log({"t_SNE_plotly_"+str(num_updates): fig, "t_sne_plot_"+str(num_updates): wandb.Image(plt)})
+    # log plots to wandb
+    wandb.log({"pca_plotly": fig,
+               "pca_plot": wandb.Image(plt)})
