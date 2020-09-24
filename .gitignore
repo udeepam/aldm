@@ -1,9 +1,7 @@
-# Files
-.DS_store
-
-# Directories
-.idea/
-.vscode/
+# General
+.DS_Store
+.vscode
+.idea
 
 # Packages
 baselines/
