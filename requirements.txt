@@ -1,5 +1,5 @@
 wandb==0.10.0
-numpy==1.18.2
+numpy==1.22.0
 gym==0.15.7
 procgen==0.10.3
 torch==1.6.0
